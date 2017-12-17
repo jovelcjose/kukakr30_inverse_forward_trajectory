@@ -11,6 +11,25 @@ import unittest
 from mpmath import jtheta, phi
 from _socket import TCP_CORK
 from PIL.ImageTransform import Transform
+#Initialization for inverse kinematics
+wcp=np.zeros((3,1))
+wcp1=np.zeros((3,1))
+poswcp=np.zeros((3,1))
+Oriwcp=np.zeros((3,1))
+A0_tcp=np.zeros((4,4),dtype=np.int)
+A0_6=np.eye(4,4,dtype=np.float64)
+DH_d=[815,0,0,1545,0,0,158]
+DH_a=[350,1200,145,0,0,0,0]
+Q3_REUp=0.0
+Q3_REDown=0.0
+Q2_REDown=0.0
+Q2_REUp=0.0
+Q3_FEUp=0.0
+Q3_FEDown=0.0
+Q2_FEDown=0.0
+Q2_FEUp=0.0
+Q1_F=0.0
+Q1_R=0.0
 class vectorspace(object):
     def __init__(self,theta_angles=[0,0,0,0,0,0]):
         self.theta_angles=theta_angles
@@ -119,7 +138,187 @@ class transformation(object):
         transform[1][0] = sin(angle)
         transform[1][1] = cos(angle)
         return self.transform(transform)
+        #to maintain the inverse also homogeneous matrix
+    #Creating problem when getting IKsolutions as error was scalar terms cannot be given
+    def inv(self):
+        inverse = np.linalg.inv(self.matrix)
+        return transformation(matrix=inverse)
+
+ 
+    def __mul__(self, other):
+        return transformation(matrix=np.dot(self.matrix, other.matrix))
+  
+    def __str__(self):
+        return str(self.matrix)
+    
+    #Position matrix and Orientations of homogeneous matrix
+    def Postion(self):
+        return (self.matrix[0][3],self.matrix[1][3],self.matrix[2][3])
+    def Orientation(self):
+        return (self.matrix[0][2],self.matrix[1][2],self.matrix[2][2])
         
+    def WCP(self):
+         global Awcp
+         vectorspaced=vectorspace()
+         Awcp=self*vectorspaced.base26()
+         global wcp1
+         poswcp=Awcp.Postion()
+         #print "wcp",wcp
+         Oriwcp=Awcp.Orientation()
+         #print "Oriwcp",Oriwcp
+         for i in range(3):
+             wcp1[i]=poswcp[i]-(DH_d[6]*Oriwcp[i])
+         if(wcp1[1]==0 and wcp1[2]==0):  #shoulder singularity
+             wcp[1]=0.000001
+         return wcp1
+  
+  
+    #Euler angle calculation
+    def EulerAngle(self):
+        phi=0
+        psi=0
+        theta=0
+        if(self.matrix[2][0]!=1 or self.matrix[2][0]!=-1):
+            theta = asin(self.matrix[2][0])
+            costheta = math.cos(theta)
+            psi = math.atan2(self.matrix[1][0] /costheta , self.matrix[0][0] /costheta )
+            phi = math.atan2(self.matrix[2][1] /costheta , self.matrix[2][2] /costheta )
+        else:
+            phi=0 
+            if(self.matrix[2][0]!=-1):
+                theta=pi/2
+                psi=phi+atan2(self[0][1],self[0][2])
+            else:
+                theta=-1*pi/2
+                psi=(-1*phi)+atan2(-1*A0_6[0][1],-1*A0_6[0][2])
+            
+        return(phi,theta,phi)
+    def cart(self):
+        cv = "%.2f;" % self.matrix[0][3]
+        cv = cv + "%.2f;" % self.matrix[1][3]
+        cv = cv + "%.2f;" % self.matrix[2][3]
+        cv = cv + "%.2f;" % np.rad2deg(self.EulerAngle()[0])
+        cv = cv + "%.2f;" % np.rad2deg(self.EulerAngle()[1])
+        cv = cv + "%.2f;" % np.rad2deg(self.EulerAngle()[2])
+        print(cv)
+        return cv
+  
+    #function @return Q1_F =theta1 front configuration,Q1_R=theta1 front arm configuration
+    def getQ1(self,xc,yc):
+          global Q1_F,Q1_R
+          Q1_F = math.atan2(yc,xc)
+          Q2_R = math.atan2(yc,xc) + math.pi
+          return [Q1_F, Q2_R]
+   
+ 
+    #function
+    #@param wrist center point values
+    #@return Q2_FEUp=theta2 front Elbow Up configuration,Q2_FEDown=theta2 front Elbow Down arm configuration    
+    def getQ2Front(self,xc,yc,zc):
+            global DH_a,DH_d,Q2_FEUp,Q2_FEDown
+            xy=math.sqrt((yc)**2+(xc)**2)
+            d34 =math.sqrt((DH_a[2])**2+(DH_d[3])**2)
+            gamma=math.atan((abs(zc)-abs(DH_d[0]))/(xy - DH_a[0]))
+            dFront=math.sqrt((xy - DH_a[0])**2 + (abs(zc) - abs(DH_d[0]))**2)
+            beta_F=math.acos(((-1*d34*d34)+(DH_a[1]**2)+(dFront**2))/(2.0*DH_a[1]*dFront))
+            Q2_FEUp=(beta_F + gamma) - (math.pi/2.0)       #front elbow up
+            Q2_FEDown = (gamma - beta_F) - (math.pi/2.0)   #front elbow down 
+            return [Q2_FEUp,Q2_FEDown]
+ 
+     #function @return Q2_REUp=theta2 Rear Elbow Up configuration,Q2_REDown=theta2 Rear Elbow Down arm configuration
+    def getQ2Rear(self,xc,yc,zc):
+            global DH_a,DH_d,Q2_REUp,Q2_REDown
+            xy=math.sqrt((yc)**2+(xc)**2)
+            d34=math.sqrt((DH_a[2])**2+(DH_d[3])**2)
+            gamma=math.atan((zc-abs(DH_d[0]))/(xy - DH_a[0]))
+            dRear=math.sqrt((xy + DH_a[0])**2 + (abs(zc) - abs(DH_d[0]))**2)
+            beta_R=math.acos(((-1*d34*d34)+(DH_a[1]**2)+(dRear**2))/(2.0*DH_a[1]*dRear))
+            Q2_REUp=(math.pi/2.0)-(beta_R+gamma)
+            Q2_REDown=(math.pi/2.0)-(gamma-beta_R)
+            return [Q2_REUp,Q2_REDown]
+     
+    #function @return Q3_FEUp=theta3 front Elbow Up configuration,Q3_FEDown=theta2 front Elbow Down arm configuration       
+    def getQ3Front(self,xc,yc,zc):
+            global DH_a,DH_d,Q3_FEUP,Q3_FEDown
+            xy=math.sqrt((yc)**2+(xc)**2)
+            d34=math.sqrt((DH_a[2])**2+(DH_d[3])**2)
+            gamma=math.atan((zc-abs(DH_d[0]))/(xy - DH_a[0]))
+            dFront=math.sqrt((xy - DH_a[0])**2 + (abs(zc) - abs(DH_d[0]))**2)
+            delta = math.atan(abs(DH_d[3]) / DH_a[2])
+            eta_F=acos(((-1*dFront**2)+(d34**2)+(1200**2))/(2*d34*1200))
+            Q3_FEUP=eta_F+delta+math.pi
+            Q3_FEDown=math.pi-(eta_F-delta)
+            return [Q3_FEUp,Q3_FEDown]
+ 
+     #function @return Q3_REUp=theta3 front Elbow Up configuration,Q3_REDown=theta2 front Elbow Down arm configuration       
+    def getQ3Rear(self,xc,yc,zc):
+            global DH_a,DH_d,Q3_REUp,Q3_REDown
+            xy=math.sqrt((yc)**2+(xc)**2)
+            d34=math.sqrt((DH_a[2])**2+(DH_d[3])**2)
+            gamma=math.atan((zc-abs(DH_d[0]))/(xy - DH_a[0]))
+            dRear=math.sqrt((xy + DH_a[0])**2 + (abs(xc) - abs(DH_d[0]))**2)
+            delta = math.atan(abs(DH_d[3]) / DH_a[2])
+            eta_R=acos(((-1*dRear**2)+(d34**2)+(1200**2))/(2*d34*1200))
+            Q3_REUp=(math.pi/2-(eta_R-delta))+(math.pi/2)
+            Q3_REDown=(math.pi/2)-((1.5*math.pi)-delta-eta_R)
+            return [Q3_REUp,Q3_REDown]
+ 
+     #function Calculate angles 4 possibilities of theta1,theta2,theta3
+    def CalculateAngles(self,wcp):
+            global IKPosResults
+            IKPosResults = []
+            q1 = self.getQ1(wcp[0],wcp[1]) 
+            q21 = self.getQ2Front(wcp[0],wcp[1],wcp[2])
+            q31 = self.getQ3Front(wcp[0],wcp[1],wcp[2])
+            arr1 = [q1[0], q21[0], q31[0]]
+            arr2 = [q1[1], q21[1], q31[1]]
+            q22 = self.getQ2Rear(wcp[0],wcp[1],wcp[2])
+            q32 = self.getQ3Rear(wcp[0],wcp[1],wcp[2])
+            arr3 = [q1[0], q22[0], q32[0]]
+            arr4 = [q1[1], q22[1], q32[1]]
+            IKPosResults.append(arr1)
+            IKPosResults.append(arr2)
+            IKPosResults.append(arr3)
+            IKPosResults.append(arr4)                     
+            return IKPosResults
+  
+       #orientation of wrist theta4,theta5,theta6 having 2 possibilities
+    def ik_orientation(self):
+        global solution
+        solution=[]
+        sintheta=np.sqrt(1-((self.matrix[2][2]**2)))
+        theta5=atan2((sintheta),self.matrix[2][2])
+        if(theta5==0 and self.matrix[0][2]==0):
+            theta4 = np.arctan2(self.matrix[1][2], self.matrix[0][2]+0.0001)
+            theta4_2=atan2(-(self.matrix[1][2]),-(self.matrix[0][2])+0.001)
+            theta6 = np.arctan2(self.matrix[2][1], -1 * self.matrix[2][0])
+            theta6_2=atan2(-(self.matrix[2][1]),self.matrix[2][1])
+        else:
+            theta4 = np.arctan2(self.matrix[1][2], self.matrix[0][2])
+            theta4_2=atan2(-(self.matrix[1][2]),-(self.matrix[0][2]))
+            theta6 = np.arctan2(self.matrix[2][1], -1 * self.matrix[2][0])
+            theta6_2=atan2(-(self.matrix[2][1]),self.matrix[2][1])
+        ar1=[theta4, theta5, theta6]
+        ar2=[theta4_2,-1*theta5,theta6_2]
+        solution.append(ar1)
+        solution.append(ar2) #reverse solutionl          
+        return solution
+  
+
+#     #Function IKSolutions
+    def IKSolution(self):
+        global wcp1
+        wcp=self.WCP()
+        solutions=self.CalculateAngles(wcp)
+        global IKSol
+        IKSol=[]
+        for i in solutions: 
+            vs = vectorspace(theta_angles=i+[0,0,0])
+            Awrist = vs.baseToWrist().inv()* vs.A6tcp().inv()
+            Awristto6 = Awrist.ik_orientation()                  
+            IKSol =IKSol+ [vectorspace(theta_angles=i+Awristto6[0])]   # thet1-theta6 possible solution
+            IKSol =IKSol +[vectorspace(theta_angles=i+Awristto6[1])] 
+        return IKSol    
         
         if __name__ == '__main__':
     vector=vectorspace()
